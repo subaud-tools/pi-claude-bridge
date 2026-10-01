@@ -259,15 +259,57 @@ describe("usage-bus account identity", () => {
 	});
 
 	it("the real-filesystem default never reads the developer's actual ~/.claude.json in a unit test", () => {
-		// tests/lib/setup.mjs points HOME at an empty temp dir for the whole suite, so the
-		// launch account's real-filesystem default path resolves to a file that doesn't
-		// exist, and accountUsageIdentity falls back to LAUNCH_ACCOUNT's own name rather
-		// than the real machine's signed-in email. A reader-injected test cannot prove
-		// this by itself: it has to call accountUsageIdentity with no readers at all.
-		assert.equal(process.env.CLAUDE_CONFIG_DIR, undefined, "CLAUDE_CONFIG_DIR must not point at a real config dir in tests");
+		// tests/lib/setup.mjs points HOME and CLAUDE_CONFIG_DIR at empty temp dirs for the
+		// whole suite, so the launch account's real-filesystem default path resolves to a
+		// file that doesn't exist, and accountUsageIdentity falls back to LAUNCH_ACCOUNT's
+		// own name rather than the real machine's signed-in email. A reader-injected test
+		// cannot prove this by itself: it has to call accountUsageIdentity with no readers.
+		const configDir = process.env.CLAUDE_CONFIG_DIR;
+		assert.ok(configDir === undefined || configDir.startsWith(tmpdir()), "CLAUDE_CONFIG_DIR must not point at a real config dir in tests");
 		assert.equal(homedir(), process.env.HOME, "os.homedir() must follow setup.mjs's redirected HOME");
 		assert.ok(homedir().includes(tmpdir()), "HOME must be a throwaway temp dir, not the developer's real home");
 		assert.deepEqual(acc.accountUsageIdentity(acc.LAUNCH_ACCOUNT), { id: "launch", label: acc.LAUNCH_ACCOUNT.name });
+	});
+});
+
+describe("active account change notifications", () => {
+	const accountB = { id: "b1", name: "b", configDir: "/tmp/accounts/b1" };
+	const accountC = { id: "c1", name: "c", configDir: "/tmp/accounts/c1" };
+
+	it("notifies a listener only when the active account id actually changes", () => {
+		const seen = [];
+		const unsubscribe = acc.subscribeActiveAccountChange((account) => seen.push(account.id));
+		try {
+			acc.setActiveAccount(accountB);
+			assert.deepEqual(seen, ["b1"]);
+			acc.setActiveAccount({ ...accountB }); // same id, different object (e.g. a rename): not a switch
+			assert.deepEqual(seen, ["b1"]);
+			acc.setActiveAccount(accountC);
+			assert.deepEqual(seen, ["b1", "c1"]);
+		} finally {
+			unsubscribe();
+		}
+	});
+
+	it("a listener that throws does not stop the others from being notified", () => {
+		const seen = [];
+		const unsubscribeBad = acc.subscribeActiveAccountChange(() => { throw new Error("boom"); });
+		const unsubscribeGood = acc.subscribeActiveAccountChange((account) => seen.push(account.id));
+		try {
+			assert.doesNotThrow(() => acc.setActiveAccount(accountB));
+			assert.deepEqual(seen, ["b1"]);
+		} finally {
+			unsubscribeBad();
+			unsubscribeGood();
+		}
+	});
+
+	it("unsubscribe stops further notifications", () => {
+		const seen = [];
+		const unsubscribe = acc.subscribeActiveAccountChange((account) => seen.push(account.id));
+		unsubscribe();
+		acc.setActiveAccount(accountB);
+		assert.deepEqual(seen, []);
 	});
 });
 
