@@ -337,7 +337,7 @@ describe("Claude provider usage protocol", () => {
 		const bus = globalThis[BUS_SYMBOL];
 		assert.equal(bus.adapters().length, 1);
 		assert.equal(bus.adapters()[0].id, "schuettc.pi-claude-bridge");
-		handlers.get("session_shutdown")();
+		handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 		assert.deepEqual(bus.adapters(), []);
 	});
 
@@ -352,7 +352,7 @@ describe("Claude provider usage protocol", () => {
 			acc.setActiveAccount({ id: "w1", name: "work", configDir: "/tmp/accounts/w1" });
 			assert.equal(adapter.currentAccount().id, "w1");
 		} finally {
-			handlers.get("session_shutdown")();
+			handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			acc.resetAccountStateForTest();
 		}
 	});
@@ -409,7 +409,7 @@ describe("Claude provider usage protocol", () => {
 			assert.equal(queryInput.options.strictMcpConfig, false);
 			assert.equal("extraArgs" in queryInput.options, false);
 		} finally {
-			handlers?.get("session_shutdown")();
+			handlers?.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
@@ -459,7 +459,7 @@ describe("Claude provider usage protocol", () => {
 			assert.equal(queryInput.options.pathToClaudeCodeExecutable, "/owner/claude");
 			assert.equal(queryInput.options.strictMcpConfig, false);
 		} finally {
-			ownerHandlers?.get("session_shutdown")();
+			ownerHandlers?.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 			process.chdir(oldCwd);
 			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
@@ -882,7 +882,7 @@ describe("consumption accounts and overage (fixtures.json)", () => {
 			assert.equal(window.resetsAt, 1793491200);
 		} finally {
 			unsubscribe();
-			handlers.get("session_shutdown")();
+			handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 			__test.resetOverageRefreshDebounceForTest();
 			acc.resetAccountStateForTest();
@@ -1051,8 +1051,8 @@ describe("standalone provider warning policy", () => {
 		const second = await consume([rejection, failure]);
 
 		assert.equal(notifications.length, 2);
-		assert.match(first.turnOutput.errorMessage, /Claude rate limit.*out of usage/);
-		assert.match(second.turnOutput.errorMessage, /Claude rate limit.*out of usage/);
+		assert.match(first.turnOutput.errorMessage, /Claude quota exceeded — rate limit.*out of usage/);
+		assert.match(second.turnOutput.errorMessage, /Claude quota exceeded — rate limit.*out of usage/);
 	});
 
 	it("validates restored markers, resets forks, and always shows hard limits", () => {
@@ -1123,7 +1123,7 @@ describe("refresh on every account switch", () => {
 			assert.equal(events[0].snapshot.account.id, accountB.id);
 		} finally {
 			unsubscribe();
-			handlers.get("session_shutdown")();
+			handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 		}
 	});
@@ -1148,7 +1148,44 @@ describe("refresh on every account switch", () => {
 			assert.equal(events.length, 0);
 		} finally {
 			unsubscribe();
-			handlers.get("session_shutdown")();
+			handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
+			__test.setUsageControlQuery();
+		}
+	});
+
+	it("only the adapter owner refreshes on a switch: a second in-process activate() never duplicates it", async () => {
+		clearBus();
+		let usageCalls = 0;
+		__test.setUsageControlQuery(() => ({
+			async usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET() { usageCalls++; return ACCOUNT_USAGE; },
+			close() {},
+		}));
+		acc.setActiveAccount(accountA);
+		const ownerHandlers = activateHarness();
+		ownerHandlers.get("session_start")({ reason: "startup" }, sessionContext(process.cwd(), "owner-session"));
+		// A second in-process activate() call, as pi's subagent/child-session factory
+		// path does: shares this module instance but must not own the usage adapter.
+		const childHandlers = activateHarness();
+		childHandlers.get("session_start")({ reason: "startup" }, sessionContext(process.cwd(), "child-session"));
+		const events = [];
+		const unsubscribe = globalThis[BUS_SYMBOL].subscribe((event) => events.push(event));
+		try {
+			acc.setActiveAccount(accountB);
+			await __test.waitForOverageRefresh(accountB.id);
+			assert.equal(usageCalls, 1, "exactly one refresh across owner + child");
+			assert.equal(events.length, 1, "exactly one published snapshot");
+			assert.equal(events[0].snapshot.account.id, accountB.id);
+
+			// Shut the owner down; the child is still subscribed but must stay a no-op.
+			ownerHandlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
+			acc.setActiveAccount(accountA);
+			await Promise.resolve();
+			await Promise.resolve();
+			assert.equal(usageCalls, 1, "no refresh from the child after the owner shut down");
+			assert.equal(events.length, 1, "no further published snapshot");
+		} finally {
+			unsubscribe();
+			childHandlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 		}
 	});
@@ -1177,7 +1214,7 @@ describe("refresh on every account switch", () => {
 			assert.equal(queryInput.options.env.CLAUDE_CONFIG_DIR, accountB.configDir);
 		} finally {
 			unsubscribe();
-			handlers.get("session_shutdown")();
+			handlers.get("session_shutdown")({}, sessionContext(process.cwd(), "shutdown-session"));
 			__test.setUsageControlQuery();
 		}
 	});
