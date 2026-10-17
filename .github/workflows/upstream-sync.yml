@@ -13,11 +13,11 @@ jobs:
   sync:
     runs-on: ubuntu-26.04
     steps:
-      - uses: schuettc/tools-actions/fork-sync@v0.10.3
+      - uses: subaud-tools/tools-actions/fork-sync@v0.11.0
         with:
           upstream_repo: "elidickinson/pi-claude-bridge"
           upstream_branch: "main"
-          pkg_name: "@schuettc/pi-claude-bridge"
+          pkg_name: "@subaud-tools/pi-claude-bridge"
           pkg_dir: "."
           tag_prefix: "v"
           test_cmd: "npm ci && npm run typecheck && npm run test:unit"
